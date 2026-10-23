@@ -61,6 +61,13 @@
   .sig canvas { width: 100%; height: 160px; border: 1.5px dashed #9aa7bf; border-radius: 8px; background: #fff; touch-action: none; display: block; }
   .sig .row { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; font-size: 12px; color: var(--muted); }
   .sig.missing canvas { border-color: var(--bad); }
+  .sig + .sig { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+  [hidden] { display: none !important; }
+  .pinrow { display: flex; gap: 8px; margin-top: 8px; }
+  .pinrow input { flex: 1; font: inherit; padding: 11px 12px; border: 1px solid var(--line); border-radius: 8px; }
+  .pinrow .chip { font-size: 14px; padding: 0 14px; background: var(--brand); color: #fff; border-color: var(--brand); }
+  .regsig { margin-top: 8px; }
+  .regsig img { display: block; width: 100%; height: 140px; object-fit: contain; border: 1.5px solid #9fc5a8; border-radius: 8px; background: #fff; }
   .ref { font-size: 12px; color: var(--muted); }
   .cats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
   .cat { border: 1px solid var(--line); border-radius: 8px; padding: 8px; font-size: 12px; }
@@ -129,6 +136,8 @@
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<!-- Supervisores y APR registrados: firmas cifradas con el PIN de cada persona (generado con registro.html) -->
+<script src="firmas.js"></script>
 <script>
 (function () {
   "use strict";
@@ -199,21 +208,34 @@
   }).join("");
 
   // ---- Signature pads ----
-  var pads = {};
+  var REG = Array.isArray(window.FIRMAS_REGISTRADAS) ? window.FIRMAS_REGISTRADAS : [];
+  var pads = {}, regSig = {}, peopleBy = {};
   $("sigs").innerHTML = SIGNERS.map(function (s) {
+    var people = peopleBy[s.id] = REG.filter(function (p) { return p.rol === s.id; });
+    var hasReg = !s.useWorkerName && people.length > 0;
+    var nameField = s.useWorkerName
+      ? '<div class="legend" id="name-' + s.id + '-echo">Nombre: (se toma de los datos de la inspección)</div>'
+      : (hasReg ? '<select id="sel-' + s.id + '"><option value="">— Seleccionar —</option>' +
+          people.map(function (p, i) { return '<option value="' + i + '">' + esc(p.nombre) + '</option>'; }).join("") +
+          '<option value="otro">Otra persona (firmar en el momento)</option></select>' : "") +
+        '<input type="text" id="name-' + s.id + '" placeholder="Nombre y apellido"' + (hasReg ? " hidden" : "") + '>';
     return '<div class="sig" id="sig-' + s.id + '">' +
-      '<label class="f" for="name-' + s.id + '">' + esc(s.label) + (s.required ? "" : " (nombre)") + '</label>' +
-      (s.useWorkerName ? '<div class="legend" id="name-' + s.id + '-echo">Nombre: (se toma de los datos de la inspección)</div>'
-                       : '<input type="text" id="name-' + s.id + '" placeholder="Nombre y apellido">') +
-      '<label class="f">Firma' + (s.required ? "" : "") + '</label>' +
+      '<label class="f" for="' + (hasReg ? "sel-" : "name-") + s.id + '">' + esc(s.label) + '</label>' + nameField +
+      (hasReg ? '<div class="pinrow" id="pinrow-' + s.id + '" hidden>' +
+          '<input type="password" inputmode="numeric" autocomplete="off" id="pin-' + s.id + '" placeholder="PIN personal" aria-label="PIN personal">' +
+          '<button type="button" class="chip" data-pin="' + s.id + '">Firmar con PIN</button></div>' +
+        '<div class="regsig" id="reg-' + s.id + '" hidden><img alt="Firma registrada">' +
+          '<div class="row"><span>Firma registrada, aplicada con PIN</span><button type="button" class="chip" data-unreg="' + s.id + '">Quitar</button></div></div>' : "") +
+      '<div id="live-' + s.id + '"' + (hasReg ? " hidden" : "") + '><label class="f">Firma</label>' +
       '<canvas id="cv-' + s.id + '" aria-label="Firma ' + esc(s.label) + '"></canvas>' +
-      '<div class="row"><span>Firme con el dedo dentro del recuadro</span><button type="button" class="chip" data-clear="' + s.id + '">Borrar firma</button></div></div>';
+      '<div class="row"><span>Firme con el dedo dentro del recuadro</span><button type="button" class="chip" data-clear="' + s.id + '">Borrar firma</button></div></div></div>';
   }).join("");
 
   function makePad(canvas) {
     var ctx = canvas.getContext("2d"), drawing = false, dirty = false, last = null;
     function resize() {
       var r = canvas.getBoundingClientRect(), dpr = Math.max(window.devicePixelRatio || 1, 1);
+      if (!r.width) return; // hidden; resized again when shown
       var prev = dirty ? canvas.toDataURL() : null;
       canvas.width = Math.round(r.width * dpr); canvas.height = Math.round(r.height * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -238,19 +260,88 @@
     resize();
     window.addEventListener("resize", resize);
     return {
+      resize: resize,
       isEmpty: function () { return !dirty; },
       clear: function () { ctx.clearRect(0, 0, canvas.width, canvas.height); dirty = false; update(); },
       // White-background JPEG keeps the PDF small
       image: function () {
         var c = document.createElement("canvas"); c.width = canvas.width; c.height = canvas.height;
         var x = c.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, c.width, c.height); x.drawImage(canvas, 0, 0);
-        return { data: c.toDataURL("image/jpeg", 0.85), w: c.width, h: c.height };
+        return { data: c.toDataURL("image/jpeg", 0.85), w: c.width, h: c.height, fmt: "JPEG" };
       }
     };
   }
   SIGNERS.forEach(function (s) { pads[s.id] = makePad($("cv-" + s.id)); });
+
+  function selected(id) {
+    var sel = $("sel-" + id);
+    return sel && sel.value !== "" && sel.value !== "otro" ? peopleBy[id][sel.value] : null;
+  }
+  function signerName(s) {
+    if (s.useWorkerName) return $("trabajador").value.trim();
+    var p = selected(s.id);
+    return p ? p.nombre : $("name-" + s.id).value.trim();
+  }
+  function signerImage(s) {
+    if (regSig[s.id]) return regSig[s.id];
+    return pads[s.id].isEmpty() ? null : pads[s.id].image();
+  }
+  function hasSig(id) { return !!(regSig[id] || !pads[id].isEmpty()); }
+
+  function onSelect(id) {
+    var v = $("sel-" + id).value;
+    regSig[id] = null; $("reg-" + id).hidden = true; $("pin-" + id).value = "";
+    $("pinrow-" + id).hidden = v === "" || v === "otro";
+    $("name-" + id).hidden = v !== "otro";
+    $("live-" + id).hidden = v !== "otro";
+    if (v === "otro") pads[id].resize();
+    pads[id].clear();
+    if (!$("pinrow-" + id).hidden) $("pin-" + id).focus();
+  }
+  SIGNERS.forEach(function (s) {
+    var sel = $("sel-" + s.id);
+    if (sel) sel.addEventListener("change", function () { onSelect(s.id); });
+    var pin = $("pin-" + s.id);
+    if (pin) pin.addEventListener("keydown", function (e) { if (e.key === "Enter") applyPin(s.id); });
+  });
+
+  function b64bytes(s) { return Uint8Array.from(atob(s), function (c) { return c.charCodeAt(0); }); }
+
+  // Decrypts the stored signature (AES-GCM, key = PBKDF2(PIN)); a wrong PIN fails authentication
+  function applyPin(id) {
+    var person = selected(id), pin = $("pin-" + id).value.trim(), btn = $("pinrow-" + id).querySelector("button");
+    if (!person) return;
+    if (!pin) { showMsg("Ingrese el PIN de " + person.nombre + "."); return; }
+    if (!window.crypto || !crypto.subtle) { showMsg("Este navegador no permite validar el PIN. Use la opción \"Otra persona\" y firme en el momento."); return; }
+    btn.disabled = true; btn.textContent = "Validando…";
+    crypto.subtle.importKey("raw", new TextEncoder().encode(pin), "PBKDF2", false, ["deriveKey"])
+      .then(function (base) {
+        return crypto.subtle.deriveKey({ name: "PBKDF2", salt: b64bytes(person.salt), iterations: person.iter, hash: "SHA-256" },
+          base, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+      })
+      .then(function (key) { return crypto.subtle.decrypt({ name: "AES-GCM", iv: b64bytes(person.iv) }, key, b64bytes(person.data)); })
+      .then(function (buf) {
+        var url = new TextDecoder().decode(buf);
+        return new Promise(function (ok) {
+          var img = new Image();
+          img.onload = function () {
+            regSig[id] = { data: url, w: img.naturalWidth, h: img.naturalHeight, fmt: "PNG", registered: true };
+            var box = $("reg-" + id); box.querySelector("img").src = url; box.hidden = false;
+            $("pinrow-" + id).hidden = true; $("pin-" + id).value = ""; $("msg").className = "msg";
+            update(); ok();
+          };
+          img.src = url;
+        });
+      })
+      .catch(function () { $("pin-" + id).value = ""; showMsg("PIN incorrecto para " + person.nombre + "."); })
+      .then(function () { btn.disabled = false; btn.textContent = "Firmar con PIN"; });
+  }
+
   $("sigs").addEventListener("click", function (e) {
     var b = e.target.closest("[data-clear]"); if (b) pads[b.getAttribute("data-clear")].clear();
+    var p = e.target.closest("[data-pin]"); if (p) applyPin(p.getAttribute("data-pin"));
+    var u = e.target.closest("[data-unreg]");
+    if (u) { var id = u.getAttribute("data-unreg"); regSig[id] = null; $("reg-" + id).hidden = true; $("pinrow-" + id).hidden = false; update(); }
   });
 
   // ---- Defaults & remembered name ----
@@ -277,7 +368,7 @@
     $("prog").style.width = (100 * done / TOTAL) + "%";
     var w = $("trabajador").value.trim();
     $("name-trab-echo").textContent = "Nombre: " + (w || "(complete el nombre del trabajador arriba)");
-    SIGNERS.forEach(function (s) { if (!pads[s.id] || !pads[s.id].isEmpty()) $("sig-" + s.id).classList.remove("missing"); });
+    SIGNERS.forEach(function (s) { if (pads[s.id] && hasSig(s.id)) $("sig-" + s.id).classList.remove("missing"); });
   }
 
   function showMsg(text, ok) { var m = $("msg"); m.textContent = text; m.className = "msg show" + (ok ? " okmsg" : ""); }
@@ -299,7 +390,7 @@
 
   function buildPdf() {
     var jsPDF = window.jspdf.jsPDF;
-    var doc = new jsPDF({ unit: "mm", format: "a4" });
+    var doc = new jsPDF({ unit: "mm", format: "a4", compress: true });
     var L = 10, R = 200, W = R - L, y = 10;
     var BRAND = [31, 63, 143], SECT = [201, 214, 239], GRID = [150, 160, 180];
     var a = answers();
@@ -406,7 +497,7 @@
     var sw = (W - 4) / 3, shh = 30;
     SIGNERS.forEach(function (s, i) {
       var x = L + i * (sw + 2);
-      var name = s.useWorkerName ? $("trabajador").value.trim() : $("name-" + s.id).value.trim();
+      var name = signerName(s), im = signerImage(s);
       doc.setDrawColor.apply(doc, GRID);
       doc.setFillColor.apply(doc, SECT); doc.rect(x, y, sw, 5, "FD");
       doc.setFont("helvetica", "bold"); doc.setFontSize(7);
@@ -415,12 +506,13 @@
       doc.setFont("helvetica", "normal"); doc.setFontSize(8.5);
       doc.text(doc.splitTextToSize(name || "", sw - 3)[0] || "", x + 1.5, y + 9);
       doc.rect(x, y + 10.5, sw, shh);
-      doc.setFontSize(6.5); doc.setTextColor(110); doc.text("FIRMA:", x + 1.5, y + 13.3); doc.setTextColor(0);
-      if (!pads[s.id].isEmpty()) {
-        var im = pads[s.id].image();
+      doc.setFontSize(6.5); doc.setTextColor(110); doc.text("FIRMA:", x + 1.5, y + 13.3);
+      if (im && im.registered) doc.text("Firma registrada (validada con PIN)", x + sw - 1.5, y + 13.3, { align: "right" });
+      doc.setTextColor(0);
+      if (im) {
         var boxW = sw - 4, boxH = shh - 6, ratio = im.w / im.h, iw = boxW, ihh = iw / ratio;
         if (ihh > boxH) { ihh = boxH; iw = ihh * ratio; }
-        doc.addImage(im.data, "JPEG", x + (sw - iw) / 2, y + 15 + (boxH - ihh) / 2, iw, ihh);
+        doc.addImage(im.data, im.fmt, x + (sw - iw) / 2, y + 15 + (boxH - ihh) / 2, iw, ihh, undefined, "FAST");
       }
     });
     y += 10.5 + shh;
@@ -450,8 +542,8 @@
     }
     if (!window.jspdf) { showMsg("No se pudo cargar el generador de PDF. Revise su conexión a internet y recargue la página."); return; }
     var warn = [];
-    if (pads.sup.isEmpty()) warn.push("supervisor/líder");
-    if (pads.apr.isEmpty()) warn.push("APR");
+    if (!hasSig("sup")) warn.push("supervisor/líder");
+    if (!hasSig("apr")) warn.push("APR");
     if (warn.length && !confirm("Falta la firma de: " + warn.join(" y ") + ". ¿Generar el PDF de todas formas?")) return;
 
     var doc = buildPdf(), name = fileName();
@@ -470,7 +562,10 @@
   $("btnReset").addEventListener("click", function () {
     if (!confirm("¿Borrar todas las respuestas y firmas?")) return;
     document.querySelectorAll('#sections input[type=radio]').forEach(function (r) { r.checked = false; r.closest(".item").classList.remove("missing"); });
-    SIGNERS.forEach(function (s) { pads[s.id].clear(); var el = $("name-" + s.id); if (el && el.tagName === "INPUT") el.value = ""; });
+    SIGNERS.forEach(function (s) {
+      pads[s.id].clear(); var el = $("name-" + s.id); if (el && el.tagName === "INPUT") el.value = "";
+      if ($("sel-" + s.id)) { $("sel-" + s.id).value = ""; onSelect(s.id); }
+    });
     $("obs").value = ""; $("color").value = ""; $("fecha").value = todayISO();
     $("msg").className = "msg"; update(); window.scrollTo(0, 0);
   });
