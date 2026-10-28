@@ -41,6 +41,9 @@
   .sec-letter { background: var(--brand); color: #fff; font-weight: 800; border-radius: 6px; min-width: 28px; height: 28px;
     display: grid; place-items: center; }
   .sec-title { font-weight: 700; font-size: 14px; flex: 1; }
+  .txt.has-img { display: flex; align-items: center; gap: 10px; }
+  .thumb { flex: none; width: 52px; height: 72px; object-fit: contain; background: #fff; border: 1px solid var(--line); border-radius: 6px; cursor: zoom-in; }
+  .thumb.big { width: 130px; height: 180px; cursor: zoom-out; }
   .sec-tools { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 4px; }
   .chip { font: inherit; font-size: 12px; border: 1px solid var(--line); background: #f6f8fc; border-radius: 999px; padding: 6px 10px; color: var(--ink); }
   .item { display: grid; grid-template-columns: 22px 1fr; gap: 6px 8px; padding: 10px 0; border-top: 1px solid var(--line); }
@@ -138,12 +141,13 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <!-- Supervisores y APR registrados: firmas cifradas con el PIN de cada persona (generado con registro.html) -->
 <script src="firmas.js"></script>
+<script src="epp-img.js"></script>
 <script>
 (function () {
   "use strict";
 
   var SECTIONS = [
-    { id: "A", title: "EPP. Inspeccionado ignífugo Categoría 1 y 2 (ATPV ≥ 4 / ≥ 8 cal/cm²)", items: [
+    { id: "A", title: "EPP. Inspeccionado ignífugo Categoría 2 (ATPV ≥ 8 cal/cm²)", items: [
       "Camisa / polera ignífuga", "Pantalón ignífugo", "Overol ignífugo", "Parka / chaqueta ignífuga",
       "Balaclava (monja) ignífuga", "Careta facial Arc Flash", "Etiqueta legible y prenda sin daños"] },
     { id: "B", title: "EPP. Inspeccionado casco dieléctrico", items: [
@@ -169,6 +173,11 @@
     { id: "apr", label: "Revisado por APR", required: false }
   ];
 
+  // Item → picture in epp-img.js (cropped from the paper form); items without a matching picture show text only
+  var IMG = window.EPP_IMG || {};
+  var ITEM_IMG = { A1: "A1", A2: "A2", A3: "A3", A4: "A4", A5: "A5", A6: "A6", B1: "B1",
+    C1: "C1", C2: "C2", C3: "C3", C4: "C4", C5: "C5", C6: "C6", C7: "C7", D1: "D1", D2: "D2", D3: "D3", D4: "D3" };
+
   var $ = function (id) { return document.getElementById(id); };
   var esc = function (s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); };
   var TOTAL = SECTIONS.reduce(function (a, s) { return a + s.items.length; }, 0);
@@ -181,8 +190,10 @@
       '<div class="sec-tools"><button type="button" class="chip" data-all="B">Todo B</button>' +
       '<button type="button" class="chip" data-all="NA">Todo N/A</button></div>';
     s.items.forEach(function (it, i) {
-      var name = s.id + (i + 1);
-      html += '<div class="item" id="it-' + name + '"><div class="num">' + (i + 1) + '</div><div class="txt">' + esc(it.toUpperCase()) + '</div>' +
+      var name = s.id + (i + 1), src = IMG[ITEM_IMG[name]];
+      html += '<div class="item" id="it-' + name + '"><div class="num">' + (i + 1) + '</div>' +
+        (src ? '<div class="txt has-img"><img class="thumb" src="' + src + '" alt="' + esc(it) + '" title="Toque para ampliar"><span>' + esc(it.toUpperCase()) + '</span></div>'
+             : '<div class="txt">' + esc(it.toUpperCase()) + '</div>') +
         '<div class="opts" role="radiogroup" aria-label="' + esc(it) + '">' +
         '<input type="radio" name="' + name + '" id="' + name + 'B" value="B"><label class="b" for="' + name + 'B">B</label>' +
         '<input type="radio" name="' + name + '" id="' + name + 'M" value="M"><label class="m" for="' + name + 'M">M</label>' +
@@ -194,6 +205,7 @@
   $("sections").innerHTML = html;
 
   $("sections").addEventListener("click", function (e) {
+    if (e.target.classList.contains("thumb")) { e.target.classList.toggle("big"); return; }
     var b = e.target.closest("[data-all]");
     if (!b) return;
     var sec = b.closest("[data-sec]");
